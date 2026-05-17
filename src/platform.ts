@@ -7,6 +7,7 @@ import chalk              from 'chalk';
 // GE Devices
 import { setupDishwasherServices }     from './dishwasherServices.js';
 import { setupRefrigeratorServices }   from './refrigeratorServices.js';
+import { setupWasherServices, setupDryerServices } from './laundryServices.js';
 
 export class SmartHqPlatform implements DynamicPlatformPlugin {
   private client: SmartHQClient;
@@ -84,6 +85,8 @@ export class SmartHqPlatform implements DynamicPlatformPlugin {
 
       if (this.config.debugServicesFridge && device.nickname === 'Refrigerator' 
         || this.config.debugServicesDishwasher && device.nickname === 'Dishwasher'
+        || this.config.debugServicesWasher && device.nickname === 'Washer'
+        || this.config.debugServicesDryer && device.nickname === 'Dryer'
         || this.config.debugServicesAll) {
         for (const service of sortedServices) {
             this.log.info(chalk.yellow("ServiceId         = " + service.serviceId));
@@ -120,6 +123,14 @@ export class SmartHqPlatform implements DynamicPlatformPlugin {
         case 'Dishwasher':
           this.debug('blue', `Setting up Dishwasher services for ${device.nickname}`);
           setupDishwasherServices.call(this, accessoryType!,  deviceServices, device.deviceId, this.groupAccessoryArray);
+          break;
+        case 'Washer':
+          this.debug('cyan', `Setting up Washer services for ${device.nickname}`);
+          setupWasherServices.call(this, accessoryType!, deviceServices, device.deviceId);
+          break;
+        case 'Dryer':
+          this.debug('magenta', `Setting up Dryer services for ${device.nickname}`);
+          setupDryerServices.call(this, accessoryType!, deviceServices, device.deviceId);
           break;
         default:
           this.debug('red', `not implemented device :  for device ${device.nickname}`);

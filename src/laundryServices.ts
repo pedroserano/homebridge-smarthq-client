@@ -1,9 +1,9 @@
-import { PlatformAccessory, Service } from 'homebridge';
+import { PlatformAccessory } from 'homebridge';
 import chalk from 'chalk';
 
 /**
  * Setup Washer Services
- * Modeled exactly after refrigeratorServices mapping
+ * Listens for real-time state change updates emitted by the SmartHQ Client event bus
  */
 export function setupWasherServices(
   this: any, 
@@ -16,35 +16,47 @@ export function setupWasherServices(
 
   this.debug('cyan', `Initializing structural features for Washer [${deviceId}]`);
 
-  // 1. Refrigerator standard: Expose base operational service block
   const washerValve = accessory.getService(Service.Valve) 
     || accessory.addService(Service.Valve, 'Washer Status');
 
   washerValve.getCharacteristic(Characteristic.ValveType)
     .setValue(Characteristic.ValveType.WATER_FAUCET);
 
-  // 2. Refrigerator standard: Use an onGet handler that reads from the local cached state array
+  // Initialize variable to mirror state locally
+  let currentCycleState = 'idle';
+
+  // Pull baseline properties from the initial services payload array parsed on discovery
+  const cycleStatusService = deviceServices.find(s => s.serviceDeviceType === 'cloud.smarthq.device.washer');
+  if (cycleStatusService && cycleStatusService.state) {
+    currentCycleState = cycleStatusService.state.cycleState || 'idle';
+  }
+
+  // Bind Homebridge GET state loop directly to our tracked state variable
   washerValve.getCharacteristic(Characteristic.Active)
     .onGet(() => {
-      // The plugin maintains internal global states populated by websocket/long-poll updates
-      const currentState = this.client.getCachedDeviceState?.(deviceId) || {};
-      return currentState.cycleState === 'running' 
+      return currentCycleState === 'running'
         ? Characteristic.Active.ACTIVE 
         : Characteristic.Active.INACTIVE;
     });
 
-  // 3. Refrigerator standard: Handle custom platform user settings if present in config
-  if (this.config.addAlerts) {
-    const alertService = accessory.getService('Washer Cycle Alert')
-      || accessory.addService(Service.ContactSensor, 'Washer Cycle Alert', 'washer-alert-uuid');
+  // Listen for push notifications emitted from the underlying SmartHQ Client instance
+  this.client.on(`${deviceId}-state-changed`, (updatedState: any) => {
+    if (updatedState && updatedState.cycleState !== undefined) {
+      currentCycleState = updatedState.cycleState;
       
-    this.debug('cyan', 'Optional cycle monitoring contact alerts injected.');
-  }
+      const nextActiveValue = currentCycleState === 'running'
+        ? Characteristic.Active.ACTIVE
+        : Characteristic.Active.INACTIVE;
+
+      this.debug('cyan', `Push update received for Washer [${deviceId}]: cycleState is now ${currentCycleState}`);
+      washerValve.updateCharacteristic(Characteristic.Active, nextActiveValue);
+    }
+  });
 }
 
 /**
  * Setup Dryer Services
- * Modeled exactly after refrigeratorServices mapping
+ * Handles live event tracking and dispatches command triggers to the SmartHQ Client execution engine
  */
 export function setupDryerServices(
   this: any, 
@@ -60,28 +72,46 @@ export function setupDryerServices(
   const dryerSwitch = accessory.getService(Service.Switch) 
     || accessory.addService(Service.Switch, 'Dryer Control');
 
-  // Bind local data retrieval caching patterns
+  let currentCycleState = 'idle';
+
+  // Read initial discovery state payload
+  const remoteTriggerService = deviceServices.find(s => s.serviceDeviceType === 'cloud.smarthq.device.dryer');
+  if (remoteTriggerService && remoteTriggerService.state) {
+    currentCycleState = remoteTriggerService.state.cycleState || 'idle';
+  }
+
   dryerSwitch.getCharacteristic(Characteristic.On)
     .onGet(() => {
-      const currentState = this.client.getCachedDeviceState?.(deviceId) || {};
-      return currentState.cycleState === 'running';
+      return currentCycleState === 'running';
     })
-    // Refrigerator standard: Set execution loops with inline error fallback messaging
     .onSet(async (value) => {
       if (value) {
         try {
-          this.log.info(chalk.green(`[SmartHQ] Dispatch remote start array command down to Dryer: ${deviceId}`));
+          this.log.info(chalk.green(`[SmartHQ] Dispatching remote execution start trigger to Dryer: ${deviceId}`));
+          
+          // Execute command via client pipeline matching your exact discovered logs layout
           await this.client.executeCommand(deviceId, {
             command: 'cloud.smarthq.command.trigger.do',
             domain: 'cloud.smarthq.domain.start'
           });
         } catch (error) {
-          this.log.error(chalk.red(`[SmartHQ] Remote trigger sequence execution error on Dryer [${deviceId}]:`), error);
-          // Refrigerator convention fallback: instantly force-revert the UI toggle state back on failure
+          this.log.error(chalk.red(`[SmartHQ] Remote trigger execution error on Dryer [${deviceId}]:`), error);
+          
+          // Revert UI toggle button state instantly upon command failure
           setTimeout(() => {
             dryerSwitch.updateCharacteristic(Characteristic.On, false);
           }, 1000);
         }
       }
     });
+
+  // Track state changes dynamically using event notifications
+  this.client.on(`${deviceId}-state-changed`, (updatedState: any) => {
+    if (updatedState && updatedState.cycleState !== undefined) {
+      currentCycleState = updatedState.cycleState;
+      
+      this.debug('magenta', `Push update received for Dryer [${deviceId}]: cycleState is now ${currentCycleState}`);
+      dryerSwitch.updateCharacteristic(Characteristic.On, currentCycleState === 'running');
+    }
+  });
 }

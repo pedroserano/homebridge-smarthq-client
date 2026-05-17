@@ -1,39 +1,101 @@
-import { PlatformAccessory, Service, CharacteristicValue } from 'homebridge';
-import { SmartHqPlatform } from './platform';
+import { PlatformAccessory } from 'homebridge';
+import chalk from 'chalk';
 
-export class LaundryServices {
-  private washerService?: Service;
-  private dryerService?: Service;
+/**
+ * Setup Washer Services
+ * Maps to HomeKit via a Valve Service to display cycle operational state
+ */
+export function setupWasherServices(
+  this: any, 
+  accessory: PlatformAccessory, 
+  deviceServices: any[], 
+  deviceId: string
+) {
+  this.log.info(`Processing capability mapping for Washer [ID: ${deviceId}]`);
 
-  constructor(
-    private readonly platform: SmartHqPlatform,
-    private readonly accessory: PlatformAccessory,
-    private readonly deviceData: any
-  ) {
-    // Accessory Information Metadata
-    this.accessory.getService(this.platform.Service.AccessoryInformation)!
-      .setCharacteristic(this.platform.Characteristic.Manufacturer, 'GE SmartHQ')
-      .setCharacteristic(this.platform.Characteristic.Model, deviceData.model || 'Laundry Appliance')
-      .setCharacteristic(this.platform.Characteristic.SerialNumber, deviceData.id);
+  // Locate the native SmartHQ state domain based on your log structure
+  const cycleStatus = deviceServices.find(s => s.serviceDeviceType === 'cloud.smarthq.device.washer');
 
-    // Initialize services based on device category exposed via SmartHQ Endpoint
-    if (deviceData.type === 'cloud.smarthq.device.washer') {
-      this.setupWasherService();
-    } else if (deviceData.type === 'cloud.smarthq.device.dryer') {
-      this.setupDryerService();
-    }
+  if (cycleStatus) {
+    // Get HAP Service and Characteristic shortcuts from the platform context
+    const Service = this.api.hap.Service;
+    const Characteristic = this.api.hap.Characteristic;
+
+    const washerValve = accessory.getService(Service.Valve) 
+      || accessory.addService(Service.Valve, 'Washer Status');
+
+    // Configure as a functional Water Faucet view inside HomeKit
+    washerValve.getCharacteristic(Characteristic.ValveType)
+      .setValue(Characteristic.ValveType.WATER_FAUCET);
+
+    // Bind HomeKit GET monitoring hook into SmartHQ Client API data
+    washerValve.getCharacteristic(Characteristic.Active)
+      .onGet(async () => {
+        try {
+          const deviceState = await this.client.getDeviceState(deviceId);
+          return deviceState.cycleState === 'running' 
+            ? Characteristic.Active.ACTIVE 
+            : Characteristic.Active.INACTIVE;
+        } catch (error) {
+          this.log.error(chalk.red('Failed to fetch live Washer state:'), error);
+          return Characteristic.Active.INACTIVE;
+        }
+      });
+
+    this.debug('cyan', 'Washer Active characteristic properties mounted successfully.');
   }
+}
 
-  private setupWasherService() {
-    this.platform.log.debug('Configuring Washer service map for HomeKit...');
-    
-    // Representing washer cycle as a Valve (Water utility type) to expose operational state
-    this.washerService = this.accessory.getService(this.platform.Service.Valve) 
-      || this.accessory.addService(this.platform.Service.Valve, 'Washer');
+/**
+ * Setup Dryer Services
+ * Maps to HomeKit via a Switch Service for execution tracking and remote triggering
+ */
+export function setupDryerServices(
+  this: any, 
+  accessory: PlatformAccessory, 
+  deviceServices: any[], 
+  deviceId: string
+) {
+  this.log.info(`Processing capability mapping for Dryer [ID: ${deviceId}]`);
 
-    this.washerService.setCharacteristic(this.platform.Characteristic.Name, 'Washer');
-    this.washerService.getCharacteristic(this.platform.Characteristic.ValveType)
-      .setValue(this.platform.Characteristic.ValveType.WATER_FAUCET);
+  const remoteStart = deviceServices.find(s => s.domainType === 'cloud.smarthq.domain.start');
+
+  if (remoteStart) {
+    const Service = this.api.hap.Service;
+    const Characteristic = this.api.hap.Characteristic;
+
+    const dryerSwitch = accessory.getService(Service.Switch) 
+      || accessory.addService(Service.Switch, 'Dryer Automation Control');
+
+    // Bind state reporting status
+    dryerSwitch.getCharacteristic(Characteristic.On)
+      .onGet(async () => {
+        try {
+          const deviceState = await this.client.getDeviceState(deviceId);
+          return deviceState.cycleState === 'running';
+        } catch (error) {
+          this.log.error(chalk.red('Failed to fetch live Dryer state:'), error);
+          return false;
+        }
+      })
+      // Bind execution trigger hooks directly to your log commands
+      .onSet(async (value) => {
+        if (value) {
+          try {
+            this.log.info(`Executing API pipeline remote start trigger command on Dryer [ID: ${deviceId}]`);
+            await this.client.executeCommand(deviceId, {
+              command: 'cloud.smarthq.command.trigger.do',
+              domain: 'cloud.smarthq.domain.start'
+            });
+          } catch (error) {
+            this.log.error(chalk.red('Failed to dispatch remote execute command trigger to Dryer:'), error);
+          }
+        }
+      });
+
+    this.debug('magenta', 'Dryer Remote Switch options registered successfully.');
+  }
+}
 
     // Bind Active states (Is the washer currently running a cycle?)
     this.washerService.getCharacteristic(this.platform.Characteristic.Active)
